@@ -48,7 +48,11 @@ uv sync
 ### Claude Code
 
 ```bash
-claude mcp add notify -- uv run --directory /path/to/agent-notify agent-notify
+# 安装
+claude mcp add notify -- uv run --directory /path/to/agent-notify/mcp agent-notify
+
+# 卸载
+claude mcp remove notify
 ```
 
 然后在项目根目录创建 `CLAUDE.md`：
