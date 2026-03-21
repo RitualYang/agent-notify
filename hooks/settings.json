@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /path/to/agent-notify/hooks/notify.py --title \"Claude Code\" --message \"Task complete\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /path/to/agent-notify/hooks/notify.py --title \"Tool Used\" --message \"$(echo $CLAUDE_TOOL_NAME) completed\""
+          }
+        ]
+      }
+    ]
+  }
+}
