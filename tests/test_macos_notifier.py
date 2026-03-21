@@ -11,8 +11,9 @@ def test_send_notification_calls_osascript():
         mock_run.assert_called_once()
         args = mock_run.call_args[0][0]
         assert args[0] == "osascript"
-        assert "Test Title" in args[1]
-        assert "Test Message" in args[1]
+        assert args[1] == "-e"
+        assert "Test Title" in args[2]
+        assert "Test Message" in args[2]
 
 
 def test_send_notification_with_sound():
@@ -20,7 +21,7 @@ def test_send_notification_with_sound():
         mock_run.return_value = MagicMock(returncode=0)
         send_macos_notification("Title", "Msg", sound=True)
         args = mock_run.call_args[0][0]
-        assert "sound name" in args[1].lower() or "Sound" in args[1]
+        assert "sound name" in args[2].lower() or "Sound" in args[2]
 
 
 def test_send_notification_without_sound():
@@ -28,7 +29,7 @@ def test_send_notification_without_sound():
         mock_run.return_value = MagicMock(returncode=0)
         send_macos_notification("Title", "Msg", sound=False)
         args = mock_run.call_args[0][0]
-        assert "sound name" not in args[1].lower()
+        assert "sound name" not in args[2].lower()
 
 
 def test_send_notification_failure():

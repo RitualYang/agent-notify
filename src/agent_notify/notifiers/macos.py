@@ -7,7 +7,7 @@ def send_macos_notification(title: str, message: str, sound: bool = True) -> boo
     if sound:
         script += ' sound name "Glass"'
     try:
-        subprocess.run(["osascript", f"-e {script}"], check=True, timeout=5)
+        subprocess.run(["osascript", "-e", script], check=True, timeout=5)
         return True
     except Exception:
         return False
