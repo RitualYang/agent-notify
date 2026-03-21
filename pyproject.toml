@@ -11,5 +11,8 @@ dependencies = [
     "mcp[cli]>=1.0.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest"]
+
 [project.scripts]
 agent-notify = "agent_notify.server:main"
