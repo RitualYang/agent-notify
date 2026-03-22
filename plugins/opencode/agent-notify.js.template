@@ -1,0 +1,38 @@
+// agent-notify opencode plugin
+// Installed by scripts/install.py
+
+import { spawn } from "node:child_process";
+
+const runtime = "__AGENT_NOTIFY_RUNTIME__";
+
+const forwardEvent = async (event, projectContext) => {
+  await new Promise((resolve) => {
+    const child = spawn(runtime, ["--client", "opencode"], {
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+    child.on("close", () => resolve());
+    child.stdin.end(
+      JSON.stringify({
+        ...event,
+        project_context: projectContext,
+      }),
+    );
+  });
+};
+
+export const AgentNotifyPlugin = async ({ directory, worktree }) => {
+  return {
+    event: async ({ event }) => {
+      if (!event?.type) {
+        return;
+      }
+      if (!["session.idle", "permission.asked", "session.error"].includes(event.type)) {
+        return;
+      }
+      await forwardEvent(event, {
+        directory,
+        worktree,
+      });
+    },
+  };
+};
