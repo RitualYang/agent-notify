@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact tag to publish, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+            git fetch --tags --force origin
+            git checkout "${version}"
+          else
+            version="${GITHUB_REF_NAME}"
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Build release archive
+        run: python3 scripts/build_release.py --version "${{ steps.version.outputs.version }}" --output-dir dist
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive="dist/agent-notify-${VERSION}.tar.gz"
+
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release upload "$VERSION" "$archive" "install-release.sh" --clobber
+          else
+            gh release create "$VERSION" "$archive" "install-release.sh" --verify-tag --generate-notes --title "$VERSION"
+          fi

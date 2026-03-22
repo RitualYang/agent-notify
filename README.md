@@ -14,6 +14,32 @@
 ./install.sh
 ```
 
+## Release 安装
+
+如果希望按已发布版本安装，可以直接使用对应 release：
+
+方式一，下载版本压缩包后安装：
+
+```bash
+curl -fsSLO https://github.com/RitualYang/agent-notify/releases/download/v0.1.0/agent-notify-v0.1.0.tar.gz
+tar -xzf agent-notify-v0.1.0.tar.gz
+cd agent-notify-v0.1.0
+./install.sh
+```
+
+方式二，下载 release 安装脚本并指定精确版本：
+
+```bash
+curl -fsSLO https://github.com/RitualYang/agent-notify/releases/download/v0.1.0/install-release.sh
+bash install-release.sh v0.1.0
+```
+
+说明：
+
+- `install-release.sh` 只支持精确版本，例如 `v0.1.0`
+- 不支持 `latest`、`v0.1.x`、`^0.1` 这类范围写法
+- 安装脚本会下载对应版本的 `agent-notify-v0.1.0.tar.gz`，解压后执行其中的 `install.sh`
+
 交互菜单：
 
 - `↑ / ↓`：移动
@@ -86,3 +112,21 @@ python3 scripts/install.py --print-interactive-defaults
 
 - `Cursor` 的“需要确认”目前是文本启发式判断，可能有少量误报或漏报
 - `Codex` 目前只预留了扩展位，尚未接入稳定的 hooks / plugin 配置
+
+## 发布 Release
+
+发布一个新版本时：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+GitHub Actions 会在 tag push 后自动：
+
+- 运行测试
+- 构建 `agent-notify-v0.1.0.tar.gz`
+- 创建或更新同名 GitHub Release
+- 上传 `agent-notify-v0.1.0.tar.gz` 和 `install-release.sh`
+
+如果需要补发某个已存在 tag 的 release 资产，也可以手动触发仓库里的 `Release` workflow，并传入精确版本号。
