@@ -85,7 +85,47 @@ class NotifyRuntimeTests(unittest.TestCase):
                 cwd=project_dir,
             )
 
-        self.assertEqual(output["notification"]["subtitle"], "multi-project-demo · 需要确认")
+        self.assertEqual(output["notification"]["kind"], "question")
+        self.assertEqual(output["notification"]["subtitle"], "multi-project-demo · 等待回答")
+
+    def test_claude_permission_notification_uses_permission_variant(self) -> None:
+        output = self.run_notify(
+            "claude",
+            {
+                "hook_event_name": "Notification",
+                "notification_type": "permission_prompt",
+                "cwd": "/tmp/agent-notify",
+            },
+        )
+
+        self.assertEqual(output["notification"]["kind"], "permission")
+        self.assertEqual(output["notification"]["subtitle"], "agent-notify · 等待授权")
+
+    def test_claude_elicitation_uses_question_variant(self) -> None:
+        output = self.run_notify(
+            "claude",
+            {
+                "hook_event_name": "Elicitation",
+                "cwd": "/tmp/agent-notify",
+            },
+        )
+
+        self.assertEqual(output["notification"]["kind"], "question")
+        self.assertEqual(output["notification"]["subtitle"], "agent-notify · 等待回答")
+
+    def test_opencode_error_uses_error_variant(self) -> None:
+        output = self.run_notify(
+            "opencode",
+            {
+                "type": "session.error",
+                "project_context": {
+                    "directory": "/tmp/agent-notify",
+                },
+            },
+        )
+
+        self.assertEqual(output["notification"]["kind"], "error")
+        self.assertEqual(output["notification"]["subtitle"], "agent-notify · 执行出错")
 
     def test_opencode_idle_subtitle_includes_project_name_from_forwarded_directory(self) -> None:
         output = self.run_notify(

@@ -10,6 +10,7 @@ usage() {
   cat <<'EOF'
 Usage:
   ./install.sh                    # interactive sync menu
+  ./install.sh update            # refresh currently installed clients
   ./install.sh all               # enable all supported clients
   ./install.sh none              # remove all supported clients
   ./install.sh claude opencode   # enable only selected clients, remove others
@@ -26,10 +27,12 @@ Selections:
 This is a single sync script:
 - checked items are installed/enabled
 - unchecked items are removed
+- update refreshes the currently installed clients in place
 
 Extra options are forwarded to scripts/install.py.
 Examples:
   ./install.sh
+  ./install.sh update
   ./install.sh claude cursor
   ./install.sh none
   ./install.sh opencode --install-dir ~/.agent-notify
@@ -50,9 +53,14 @@ selection_to_client() {
 
 clients=()
 forwarded=()
+update_installed=false
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    update)
+      update_installed=true
+      shift 1
+      ;;
     -h|--help)
       usage
       exit 0
@@ -81,7 +89,12 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ "${#clients[@]}" -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then
+if [ "$update_installed" = true ] && [ "${#clients[@]}" -gt 0 ]; then
+  echo "update cannot be combined with explicit client selections" >&2
+  exit 1
+fi
+
+if [ "$update_installed" = false ] && [ "${#clients[@]}" -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then
   defaults=()
   cmd=("$PYTHON_BIN" "$ROOT_DIR/scripts/install.py" --print-interactive-defaults)
   if [ "${#forwarded[@]}" -gt 0 ]; then
@@ -121,6 +134,9 @@ if [ "${#clients[@]}" -gt 0 ]; then
 fi
 
 cmd=("$PYTHON_BIN" "$ROOT_DIR/scripts/install.py")
+if [ "$update_installed" = true ]; then
+  cmd+=(--update-installed)
+fi
 if [ "${#args[@]}" -gt 0 ]; then
   cmd+=("${args[@]}")
 fi

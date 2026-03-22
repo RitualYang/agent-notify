@@ -18,6 +18,28 @@ DEFAULT_CONFIG = {
         "sound": "Glass",
     },
     "dedupe_window_seconds": 2,
+    "notification_variants": {
+        "complete": {
+            "subtitle": "执行完成",
+            "message": "任务已完成，等待你查看结果。",
+        },
+        "question": {
+            "subtitle": "等待回答",
+            "message": "Agent 正在等待你的回答。",
+        },
+        "permission": {
+            "subtitle": "等待授权",
+            "message": "Agent 正在等待你的权限确认。",
+        },
+        "input": {
+            "subtitle": "需要补充信息",
+            "message": "Agent 需要你补充更多信息。",
+        },
+        "error": {
+            "subtitle": "执行出错",
+            "message": "运行过程中发生错误，请打开界面查看。",
+        },
+    },
     "claude": {
         "notify_on_stop": True,
         "notify_on_notification": True,
@@ -71,6 +93,12 @@ DEFAULT_CONFIG = {
             "session.error",
         ],
     },
+}
+
+CLIENT_DEFAULT_TITLES = {
+    "claude": "Claude Code",
+    "cursor": "Cursor",
+    "opencode": "OpenCode",
 }
 
 
@@ -198,6 +226,72 @@ def resolve_project_name(payload: dict[str, Any], client: str) -> str | None:
     return None
 
 
+def variant_settings(config: dict[str, Any], kind: str) -> dict[str, Any]:
+    variants = config.get("notification_variants", {})
+    value = variants.get(kind, {}) if isinstance(variants, dict) else {}
+    return value if isinstance(value, dict) else {}
+
+
+def resolve_notification_title(client: str, kind: str, config: dict[str, Any]) -> str:
+    client_config = config.get(client, {})
+    if not isinstance(client_config, dict):
+        client_config = {}
+
+    if isinstance(client_config.get("title"), str):
+        return str(client_config["title"])
+    if kind == "complete" and isinstance(client_config.get("stop_title"), str):
+        return str(client_config["stop_title"])
+    if client == "cursor" and kind == "question" and isinstance(client_config.get("question_title"), str):
+        return str(client_config["question_title"])
+    if kind in {"question", "permission", "input", "error"} and isinstance(client_config.get("notification_title"), str):
+        return str(client_config["notification_title"])
+    return CLIENT_DEFAULT_TITLES.get(client, client.title())
+
+
+def resolve_notification_message(
+    client: str,
+    kind: str,
+    config: dict[str, Any],
+    message: str | None,
+) -> str:
+    normalized = truncate(message) if message else ""
+    if normalized:
+        return normalized
+
+    client_config = config.get(client, {})
+    if not isinstance(client_config, dict):
+        client_config = {}
+
+    if kind == "complete" and isinstance(client_config.get("stop_message"), str):
+        return str(client_config["stop_message"])
+    if client == "cursor" and kind == "question" and isinstance(client_config.get("question_message"), str):
+        return str(client_config["question_message"])
+
+    variant = variant_settings(config, kind)
+    if isinstance(variant.get("message"), str):
+        return str(variant["message"])
+    return ""
+
+
+def resolve_notification_subtitle(kind: str, config: dict[str, Any], subtitle: str | None) -> str:
+    if subtitle:
+        return subtitle
+    variant = variant_settings(config, kind)
+    if isinstance(variant.get("subtitle"), str):
+        return str(variant["subtitle"])
+    return kind
+
+
+def finalize_notification(client: str, notification: dict[str, str], config: dict[str, Any]) -> dict[str, str]:
+    kind = str(notification["kind"])
+    return {
+        "kind": kind,
+        "title": str(notification.get("title") or resolve_notification_title(client, kind, config)),
+        "subtitle": resolve_notification_subtitle(kind, config, notification.get("subtitle")),
+        "message": truncate(resolve_notification_message(client, kind, config, notification.get("message"))),
+    }
+
+
 def recent_duplicate(state: dict[str, Any], key: str, window_seconds: int) -> bool:
     last = state.get("last_notification", {})
     return last.get("key") == key and (time.time() - float(last.get("timestamp", 0))) < window_seconds
@@ -244,29 +338,24 @@ def classify_claude(payload: dict[str, Any], config: dict[str, Any]) -> dict[str
         notification_type = payload.get("notification_type")
         if notification_type not in claude_config.get("notification_types", []):
             return None
-        title = str(payload.get("title") or claude_config.get("notification_title") or "Claude Code")
-        message = str(payload.get("message") or "Claude Code 需要你处理一个新事件。")
+        kind_map = {
+            "permission_prompt": "permission",
+            "idle_prompt": "input",
+            "elicitation_dialog": "question",
+        }
         return {
-            "kind": "ask",
-            "title": title,
-            "subtitle": str(notification_type or "需要输入"),
-            "message": truncate(message),
+            "kind": kind_map.get(str(notification_type), "input"),
+            "message": str(payload.get("message") or ""),
         }
 
     if event in {"Stop", "SubagentStop"} and claude_config.get("notify_on_stop", True):
         return {
             "kind": "complete",
-            "title": str(claude_config.get("stop_title") or "Claude Code"),
-            "subtitle": "执行完成",
-            "message": str(claude_config.get("stop_message") or "任务已完成，等待你查看结果。"),
         }
 
     if event == "Elicitation" and claude_config.get("notify_on_notification", True):
         return {
-            "kind": "ask",
-            "title": str(claude_config.get("notification_title") or "Claude Code"),
-            "subtitle": "需要输入",
-            "message": "Claude Code 正在等待你的回答。",
+            "kind": "question",
         }
 
     return None
@@ -291,10 +380,8 @@ def classify_cursor(payload: dict[str, Any], config: dict[str, Any], state: dict
             return None
         remember_cursor_question(state, payload)
         return {
-            "kind": "ask",
-            "title": str(cursor_config.get("question_title") or "Cursor"),
-            "subtitle": "需要确认",
-            "message": truncate(text) or str(cursor_config.get("question_message")),
+            "kind": "question",
+            "message": text,
         }
 
     if event == "stop" and cursor_config.get("notify_on_stop", True):
@@ -309,9 +396,6 @@ def classify_cursor(payload: dict[str, Any], config: dict[str, Any], state: dict
             return None
         return {
             "kind": "complete",
-            "title": str(cursor_config.get("stop_title") or "Cursor"),
-            "subtitle": "执行完成",
-            "message": str(cursor_config.get("stop_message") or "Agent 已执行完毕，等待你查看结果。"),
         }
 
     return None
@@ -324,23 +408,13 @@ def classify_opencode(payload: dict[str, Any], config: dict[str, Any]) -> dict[s
     if event == "session.idle" and opencode_config.get("notify_on_stop", True):
         return {
             "kind": "complete",
-            "title": str(opencode_config.get("stop_title") or "OpenCode"),
-            "subtitle": "执行完成",
-            "message": str(opencode_config.get("stop_message") or "会话已进入空闲状态，等待你查看结果。"),
         }
 
     if event in opencode_config.get("notification_events", []) and opencode_config.get("notify_on_notification", True):
-        message = str(payload.get("message") or "OpenCode 需要你处理一个新事件。")
-        subtitle = "需要确认" if event == "permission.asked" else event
-        if event == "permission.asked" and not payload.get("message"):
-            message = "OpenCode 正在等待你的权限确认。"
-        if event == "session.error" and not payload.get("message"):
-            message = "OpenCode 会话发生错误，请打开界面查看。"
+        kind = "permission" if event == "permission.asked" else "error"
         return {
-            "kind": "ask",
-            "title": str(opencode_config.get("notification_title") or "OpenCode"),
-            "subtitle": subtitle,
-            "message": truncate(message),
+            "kind": kind,
+            "message": str(payload.get("message") or ""),
         }
 
     return None
@@ -375,6 +449,8 @@ def main() -> int:
         if not args.dry_run:
             save_json(state_path, state)
         return 0
+
+    notification = finalize_notification(client, notification, config)
 
     notification["subtitle"] = format_subtitle(
         resolve_project_name(payload, client),

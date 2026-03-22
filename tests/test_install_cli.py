@@ -93,6 +93,15 @@ class InstallCliTests(unittest.TestCase):
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text(json.dumps(payload), encoding="utf-8")
 
+    def run_install_sh(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(INSTALL_SH), *args],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
     def test_print_interactive_defaults_ignores_stale_claude_hook_without_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_root = Path(tmpdir)
@@ -165,6 +174,123 @@ class InstallCliTests(unittest.TestCase):
             self.assertIn("[ ] Cursor", output)
             self.assertIn("[ ] OpenCode", output)
             self.assertNotIn("unbound variable", output)
+
+    def test_update_installed_refreshes_existing_client(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            install_dir = temp_root / ".agent-notify"
+            runtime_path = install_dir / "bin" / "notify.py"
+            runtime_path.parent.mkdir(parents=True, exist_ok=True)
+            runtime_path.write_text("# old runtime\n", encoding="utf-8")
+            claude_settings = temp_root / ".claude" / "settings.json"
+            cursor_hooks = temp_root / ".cursor" / "hooks.json"
+            opencode_plugin = temp_root / ".config" / "opencode" / "plugins" / "agent-notify.js"
+            self.write_claude_settings(claude_settings, runtime_path)
+
+            result = self.run_install(
+                "--update-installed",
+                "--install-dir",
+                str(install_dir),
+                "--claude-settings",
+                str(claude_settings),
+                "--cursor-hooks",
+                str(cursor_hooks),
+                "--opencode-plugin",
+                str(opencode_plugin),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Enabled clients: claude", result.stdout)
+            self.assertEqual(
+                runtime_path.read_text(encoding="utf-8"),
+                (REPO_ROOT / "hooks" / "notify.py").read_text(encoding="utf-8"),
+            )
+
+    def test_update_installed_requires_existing_installation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            result = self.run_install(
+                "--update-installed",
+                "--install-dir",
+                str(temp_root / ".agent-notify"),
+                "--claude-settings",
+                str(temp_root / ".claude" / "settings.json"),
+                "--cursor-hooks",
+                str(temp_root / ".cursor" / "hooks.json"),
+                "--opencode-plugin",
+                str(temp_root / ".config" / "opencode" / "plugins" / "agent-notify.js"),
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("No installed clients found", result.stderr)
+
+    def test_update_installed_merges_new_config_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            install_dir = temp_root / ".agent-notify"
+            runtime_path = install_dir / "bin" / "notify.py"
+            runtime_path.parent.mkdir(parents=True, exist_ok=True)
+            runtime_path.write_text("# old runtime\n", encoding="utf-8")
+            config_path = install_dir / "config.json"
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "cursor": {
+                            "question_message": "Keep my custom prompt",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            claude_settings = temp_root / ".claude" / "settings.json"
+            cursor_hooks = temp_root / ".cursor" / "hooks.json"
+            opencode_plugin = temp_root / ".config" / "opencode" / "plugins" / "agent-notify.js"
+            self.write_claude_settings(claude_settings, runtime_path)
+
+            result = self.run_install(
+                "--update-installed",
+                "--install-dir",
+                str(install_dir),
+                "--claude-settings",
+                str(claude_settings),
+                "--cursor-hooks",
+                str(cursor_hooks),
+                "--opencode-plugin",
+                str(opencode_plugin),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(config["cursor"]["question_message"], "Keep my custom prompt")
+            self.assertEqual(config["notification_variants"]["question"]["subtitle"], "等待回答")
+
+    def test_install_sh_update_refreshes_existing_client(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            install_dir = temp_root / ".agent-notify"
+            runtime_path = install_dir / "bin" / "notify.py"
+            runtime_path.parent.mkdir(parents=True, exist_ok=True)
+            runtime_path.write_text("# old runtime\n", encoding="utf-8")
+            claude_settings = temp_root / ".claude" / "settings.json"
+            cursor_hooks = temp_root / ".cursor" / "hooks.json"
+            opencode_plugin = temp_root / ".config" / "opencode" / "plugins" / "agent-notify.js"
+            self.write_claude_settings(claude_settings, runtime_path)
+
+            result = self.run_install_sh(
+                "update",
+                "--install-dir",
+                str(install_dir),
+                "--claude-settings",
+                str(claude_settings),
+                "--cursor-hooks",
+                str(cursor_hooks),
+                "--opencode-plugin",
+                str(opencode_plugin),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Enabled clients: claude", result.stdout)
 
 
 if __name__ == "__main__":

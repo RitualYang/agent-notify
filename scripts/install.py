@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 
 from providers import (
@@ -40,6 +41,11 @@ def main() -> int:
     parser.add_argument("--keep-runtime", action="store_true", help="Keep runtime files even when no client remains selected.")
     parser.add_argument("--print-installed", action="store_true", help="Print currently installed supported clients, one per line.")
     parser.add_argument(
+        "--update-installed",
+        action="store_true",
+        help="Refresh runtime, config, hooks, and plugins for currently installed supported clients.",
+    )
+    parser.add_argument(
         "--print-interactive-defaults",
         action="store_true",
         help="Print clients that pass the interactive preflight check and should be preselected.",
@@ -63,7 +69,16 @@ def main() -> int:
             print(client)
         return 0
 
-    selected_clients = normalize_clients(args.client, ("claude", "cursor"))
+    if args.update_installed and args.client:
+        parser.error("--update-installed cannot be combined with --client")
+
+    if args.update_installed:
+        selected_clients = installed_clients
+        if not selected_clients:
+            print("No installed clients found. Run ./install.sh first to select clients.", file=sys.stderr)
+            return 1
+    else:
+        selected_clients = normalize_clients(args.client, ("claude", "cursor"))
     selected_supported = [client for client in selected_clients if client in SUPPORTED_CLIENTS]
 
     enabled: list[str] = []

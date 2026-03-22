@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import os
 import shlex
@@ -38,6 +39,86 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 RUNTIME_SOURCE = REPO_ROOT / "hooks" / "notify.py"
 OPENCODE_TEMPLATE = REPO_ROOT / "plugins" / "opencode" / "agent-notify.js.template"
 
+DEFAULT_CONFIG = {
+    "macos": {"sound": "Glass"},
+    "dedupe_window_seconds": 2,
+    "notification_variants": {
+        "complete": {
+            "subtitle": "执行完成",
+            "message": "任务已完成，等待你查看结果。",
+        },
+        "question": {
+            "subtitle": "等待回答",
+            "message": "Agent 正在等待你的回答。",
+        },
+        "permission": {
+            "subtitle": "等待授权",
+            "message": "Agent 正在等待你的权限确认。",
+        },
+        "input": {
+            "subtitle": "需要补充信息",
+            "message": "Agent 需要你补充更多信息。",
+        },
+        "error": {
+            "subtitle": "执行出错",
+            "message": "运行过程中发生错误，请打开界面查看。",
+        },
+    },
+    "claude": {
+        "notify_on_stop": True,
+        "notify_on_notification": True,
+        "notification_types": [
+            "permission_prompt",
+            "idle_prompt",
+            "elicitation_dialog",
+        ],
+        "stop_title": "Claude Code",
+        "stop_message": "任务已完成，等待你查看结果。",
+        "notification_title": "Claude Code",
+    },
+    "cursor": {
+        "notify_on_stop": True,
+        "notify_on_question": True,
+        "stop_title": "Cursor",
+        "stop_message": "Agent 已执行完毕，等待你查看结果。",
+        "question_title": "Cursor",
+        "question_message": "Agent 正在等待你的回答。",
+        "suppress_stop_after_question_seconds": 8,
+        "question_patterns": [
+            r"\?",
+            r"\bwould you like\b",
+            r"\bdo you want\b",
+            r"\bshould i\b",
+            r"\bcould you\b",
+            r"\bcan you\b",
+            r"\bplease confirm\b",
+            r"\bplease provide\b",
+            r"\blet me know\b",
+            r"\bwhich option\b",
+            r"\bwhat would you like\b",
+            r"请确认",
+            r"请提供",
+            r"请问",
+            r"请选择",
+            r"你希望",
+            r"你想要",
+            r"是否需要",
+            r"要不要",
+        ],
+    },
+    "opencode": {
+        "notify_on_stop": True,
+        "notify_on_notification": True,
+        "stop_title": "OpenCode",
+        "stop_message": "会话已进入空闲状态，等待你查看结果。",
+        "notification_title": "OpenCode",
+        "notification_events": [
+            "permission.asked",
+            "session.error",
+        ],
+    },
+}
+
 
 PROVIDERS: dict[str, ProviderSpec] = {
     "claude": ProviderSpec(name="claude", supported=True),
@@ -63,6 +144,18 @@ def load_json(path: Path, default: Any) -> Any:
 def save_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def merge_missing_defaults(existing: Any, defaults: Any) -> Any:
+    if isinstance(existing, dict) and isinstance(defaults, dict):
+        merged = dict(existing)
+        for key, value in defaults.items():
+            if key not in merged:
+                merged[key] = deepcopy(value)
+                continue
+            merged[key] = merge_missing_defaults(merged[key], value)
+        return merged
+    return existing
 
 
 def ensure_executable(path: Path) -> None:
@@ -113,66 +206,12 @@ def prune_empty_objects(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def merge_default_config(config_path: Path) -> None:
-    if config_path.exists():
-        return
-    default_config = {
-        "macos": {"sound": "Glass"},
-        "dedupe_window_seconds": 2,
-        "claude": {
-            "notify_on_stop": True,
-            "notify_on_notification": True,
-            "notification_types": [
-                "permission_prompt",
-                "idle_prompt",
-                "elicitation_dialog",
-            ],
-            "stop_title": "Claude Code",
-            "stop_message": "任务已完成，等待你查看结果。",
-            "notification_title": "Claude Code",
-        },
-        "cursor": {
-            "notify_on_stop": True,
-            "notify_on_question": True,
-            "stop_title": "Cursor",
-            "stop_message": "Agent 已执行完毕，等待你查看结果。",
-            "question_title": "Cursor",
-            "question_message": "Agent 需要你确认或提供更多信息。",
-            "suppress_stop_after_question_seconds": 8,
-            "question_patterns": [
-                r"\?",
-                r"\bwould you like\b",
-                r"\bdo you want\b",
-                r"\bshould i\b",
-                r"\bcould you\b",
-                r"\bcan you\b",
-                r"\bplease confirm\b",
-                r"\bplease provide\b",
-                r"\blet me know\b",
-                r"\bwhich option\b",
-                r"\bwhat would you like\b",
-                r"请确认",
-                r"请提供",
-                r"请问",
-                r"请选择",
-                r"你希望",
-                r"你想要",
-                r"是否需要",
-                r"要不要",
-            ],
-        },
-        "opencode": {
-            "notify_on_stop": True,
-            "notify_on_notification": True,
-            "stop_title": "OpenCode",
-            "stop_message": "会话已进入空闲状态，等待你查看结果。",
-            "notification_title": "OpenCode",
-            "notification_events": [
-                "permission.asked",
-                "session.error",
-            ],
-        },
-    }
-    save_json(config_path, default_config)
+    current = load_json(config_path, {})
+    if not isinstance(current, dict):
+        current = {}
+    merged = merge_missing_defaults(current, DEFAULT_CONFIG)
+    if not config_path.exists() or merged != current:
+        save_json(config_path, merged)
 
 
 def remove_path_if_empty(path: Path) -> None:
