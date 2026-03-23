@@ -1,6 +1,6 @@
 # agent-notify
 
-为 `Claude Code`、`Cursor`、`OpenCode` 提供 macOS 系统通知。
+为 `Claude Code`、`Cursor`、`OpenCode`、`Codex` 提供 macOS 系统通知。
 
 一个脚本即可同步状态：勾选的客户端会启用通知，取消勾选的客户端会被移除。
 
@@ -68,6 +68,7 @@ bash install-release.sh v0.1.1 update
 - `Claude Code`：完成提醒、需要处理时提醒
 - `Cursor`：完成提醒、需要确认时提醒
 - `OpenCode`：`session.idle`、`permission.asked`、`session.error`
+- `Codex`：完成提醒为稳定支持；`等待授权 / 等待回答 / 需要补充信息 / 执行出错` 为实验性支持
 
 ## 常用命令
 
@@ -77,6 +78,7 @@ bash install-release.sh v0.1.1 update
 ./install.sh all           # 启用全部
 ./install.sh none          # 删除全部
 ./install.sh claude cursor # 只保留 Claude Code + Cursor
+./install.sh codex         # 只保留 Codex
 ./install.sh opencode      # 只保留 OpenCode
 ```
 
@@ -84,7 +86,7 @@ bash install-release.sh v0.1.1 update
 
 ```bash
 ./install.sh claude,opencode
-./install.sh 1 3
+./install.sh 1 4
 ```
 
 ## 写入位置
@@ -94,6 +96,8 @@ bash install-release.sh v0.1.1 update
 - `~/.claude/settings.json`
 - `~/.cursor/hooks.json`
 - `~/.config/opencode/plugins/agent-notify.js`
+- `~/.codex/config.toml`
+- `~/.codex/hooks.json`
 
 ## 配置
 
@@ -122,6 +126,7 @@ bash install-release.sh v0.1.1 update
 
 ```bash
 python3 scripts/install.py --client claude --client opencode
+python3 scripts/install.py --client codex
 python3 scripts/install.py --update-installed
 python3 scripts/install.py --client none
 python3 scripts/install.py --print-installed
@@ -131,7 +136,9 @@ python3 scripts/install.py --print-interactive-defaults
 ## 说明
 
 - `Cursor` 的“需要确认”目前是文本启发式判断，可能有少量误报或漏报
-- `Codex` 目前只预留了扩展位，尚未接入稳定的 hooks / plugin 配置
+- `Codex` 的完成提醒走稳定 `notify` 回调；更丰富的通知分类依赖实验性 hooks，当前按 `codex-cli 0.114.x` 到 `0.116.x` 验证
+- `Codex` 如果版本不在上述范围内，会自动退回为仅完成提醒，不会强行启用实验性 hooks
+- `Codex` 卸载时只移除 `agent-notify` 自己写入的配置，不会覆盖其他已有 Codex 配置
 - `./install.sh update` 会保留当前已启用客户端，并只补齐新版运行时与新增默认配置，不会覆盖你的已有自定义配置
 
 ## 发布 Release
