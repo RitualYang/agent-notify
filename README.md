@@ -120,19 +120,6 @@ bash install-release.sh v0.1.1 update
 - `input`
 - `error`
 
-## 进阶
-
-底层脚本仍可直接调用：
-
-```bash
-python3 scripts/install.py --client claude --client opencode
-python3 scripts/install.py --client codex
-python3 scripts/install.py --update-installed
-python3 scripts/install.py --client none
-python3 scripts/install.py --print-installed
-python3 scripts/install.py --print-interactive-defaults
-```
-
 ## 说明
 
 - `Cursor` 的“需要确认”目前是文本启发式判断，可能有少量误报或漏报
@@ -140,21 +127,3 @@ python3 scripts/install.py --print-interactive-defaults
 - `Codex` 如果版本不在上述范围内，会自动退回为仅完成提醒，不会强行启用实验性 hooks
 - `Codex` 卸载时只移除 `agent-notify` 自己写入的配置，不会覆盖其他已有 Codex 配置
 - `./install.sh update` 会保留当前已启用客户端，并只补齐新版运行时与新增默认配置，不会覆盖你的已有自定义配置
-
-## 发布 Release
-
-发布一个新版本时：
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-GitHub Actions 会在 tag push 后自动：
-
-- 运行测试
-- 构建 `agent-notify-v0.1.0.tar.gz`
-- 创建或更新同名 GitHub Release
-- 上传 `agent-notify-v0.1.0.tar.gz` 和 `install-release.sh`
-
-如果需要补发某个已存在 tag 的 release 资产，也可以手动触发仓库里的 `Release` workflow，并传入精确版本号。
