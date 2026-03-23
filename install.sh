@@ -1,8 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck shell=bash
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PYTHON_BIN="${PYTHON:-python3}"
+PYTHON_BIN="${PYTHON:-}"
+
+supports_tomllib() {
+  "$1" - <<'PY' >/dev/null 2>&1
+import tomllib
+PY
+}
+
+find_python_interpreter() {
+  local candidate
+  for candidate in "$@"; do
+    if command -v "$candidate" >/dev/null 2>&1 && supports_tomllib "$candidate"; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [ -n "$PYTHON_BIN" ]; then
+  if ! supports_tomllib "$PYTHON_BIN"; then
+    echo "The interpreter '$PYTHON_BIN' cannot import tomllib. Please point PYTHON to Python 3.11+." >&2
+    exit 1
+  fi
+else
+  candidates=(python3.12 python3.11 python3)
+  if ! PYTHON_BIN="$(find_python_interpreter "${candidates[@]}")"; then
+    echo "Unable to find a Python 3.11+ interpreter. Install one or set PYTHON to it." >&2
+    exit 1
+  fi
+fi
 # shellcheck source=scripts/interactive-select.sh
 source "$ROOT_DIR/scripts/interactive-select.sh"
 
