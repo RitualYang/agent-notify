@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -19,10 +20,15 @@ import providers  # noqa: E402
 
 
 class InstallCliTests(unittest.TestCase):
-    def run_install(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def run_install(
+        self,
+        *args: str,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(INSTALL_SCRIPT), *args],
             cwd=REPO_ROOT,
+            env=env,
             text=True,
             capture_output=True,
             check=False,
@@ -102,6 +108,26 @@ class InstallCliTests(unittest.TestCase):
             check=False,
         )
 
+    def make_fake_codex_env(self, temp_root: Path, version: str) -> dict[str, str]:
+        bin_dir = temp_root / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        codex_bin = bin_dir / "codex"
+        codex_bin.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [ "$1" = "--version" ]; then\n'
+            f'  printf "codex-cli {version}\\n"\n'
+            "  exit 0\n"
+            "fi\n"
+            'printf "unexpected codex invocation: %s\\n" "$*" >&2\n'
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        codex_bin.chmod(0o755)
+        return {
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+        }
+
     def test_print_interactive_defaults_ignores_stale_claude_hook_without_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_root = Path(tmpdir)
@@ -173,6 +199,7 @@ class InstallCliTests(unittest.TestCase):
             self.assertIn("[ ] Claude Code", output)
             self.assertIn("[ ] Cursor", output)
             self.assertIn("[ ] OpenCode", output)
+            self.assertIn("[ ] Codex", output)
             self.assertNotIn("unbound variable", output)
 
     def test_update_installed_refreshes_existing_client(self) -> None:
@@ -291,6 +318,180 @@ class InstallCliTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("Enabled clients: claude", result.stdout)
+
+    def test_install_codex_writes_stable_notify_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            install_dir = temp_root / ".agent-notify"
+            codex_config = temp_root / ".codex" / "config.toml"
+            codex_hooks = temp_root / ".codex" / "hooks.json"
+            codex_config.parent.mkdir(parents=True, exist_ok=True)
+            codex_config.write_text('model = "gpt-5.4"\n', encoding="utf-8")
+
+            result = self.run_install(
+                "--client",
+                "codex",
+                "--install-dir",
+                str(install_dir),
+                "--claude-settings",
+                str(temp_root / ".claude" / "settings.json"),
+                "--cursor-hooks",
+                str(temp_root / ".cursor" / "hooks.json"),
+                "--opencode-plugin",
+                str(temp_root / ".config" / "opencode" / "plugins" / "agent-notify.js"),
+                "--codex-config",
+                str(codex_config),
+                "--codex-hooks",
+                str(codex_hooks),
+                env=self.make_fake_codex_env(temp_root, "0.116.0"),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config_text = codex_config.read_text(encoding="utf-8")
+            self.assertIn('model = "gpt-5.4"', config_text)
+            self.assertIn("notify = [", config_text)
+            self.assertIn('"codex"', config_text)
+            self.assertIn('"agent-notify"', config_text)
+
+    def test_install_codex_unsupported_version_skips_experimental_hooks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            install_dir = temp_root / ".agent-notify"
+            codex_config = temp_root / ".codex" / "config.toml"
+            codex_hooks = temp_root / ".codex" / "hooks.json"
+            codex_config.parent.mkdir(parents=True, exist_ok=True)
+
+            result = self.run_install(
+                "--client",
+                "codex",
+                "--install-dir",
+                str(install_dir),
+                "--claude-settings",
+                str(temp_root / ".claude" / "settings.json"),
+                "--cursor-hooks",
+                str(temp_root / ".cursor" / "hooks.json"),
+                "--opencode-plugin",
+                str(temp_root / ".config" / "opencode" / "plugins" / "agent-notify.js"),
+                "--codex-config",
+                str(codex_config),
+                "--codex-hooks",
+                str(codex_hooks),
+                env=self.make_fake_codex_env(temp_root, "0.117.0"),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("completion-only", result.stdout + result.stderr)
+            self.assertFalse(codex_hooks.exists())
+            self.assertNotIn("codex_hooks = true", codex_config.read_text(encoding="utf-8"))
+
+    def test_uninstall_codex_preserves_foreign_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            install_dir = temp_root / ".agent-notify"
+            codex_config = temp_root / ".codex" / "config.toml"
+            codex_hooks = temp_root / ".codex" / "hooks.json"
+
+            install_result = self.run_install(
+                "--client",
+                "codex",
+                "--install-dir",
+                str(install_dir),
+                "--claude-settings",
+                str(temp_root / ".claude" / "settings.json"),
+                "--cursor-hooks",
+                str(temp_root / ".cursor" / "hooks.json"),
+                "--opencode-plugin",
+                str(temp_root / ".config" / "opencode" / "plugins" / "agent-notify.js"),
+                "--codex-config",
+                str(codex_config),
+                "--codex-hooks",
+                str(codex_hooks),
+                env=self.make_fake_codex_env(temp_root, "0.116.0"),
+            )
+            self.assertEqual(install_result.returncode, 0, install_result.stderr)
+
+            codex_config.write_text(
+                codex_config.read_text(encoding="utf-8")
+                + '\n[projects."/tmp/demo"]\ntrust_level = "trusted"\n',
+                encoding="utf-8",
+            )
+
+            foreign_command = "echo foreign-stop-hook"
+            hooks_payload = json.loads(codex_hooks.read_text(encoding="utf-8"))
+            hooks_payload.setdefault("hooks", {}).setdefault("Stop", []).append(
+                {"hooks": [{"type": "command", "command": foreign_command}]}
+            )
+            codex_hooks.write_text(json.dumps(hooks_payload), encoding="utf-8")
+
+            uninstall_result = self.run_install(
+                "--client",
+                "none",
+                "--install-dir",
+                str(install_dir),
+                "--claude-settings",
+                str(temp_root / ".claude" / "settings.json"),
+                "--cursor-hooks",
+                str(temp_root / ".cursor" / "hooks.json"),
+                "--opencode-plugin",
+                str(temp_root / ".config" / "opencode" / "plugins" / "agent-notify.js"),
+                "--codex-config",
+                str(codex_config),
+                "--codex-hooks",
+                str(codex_hooks),
+            )
+
+            self.assertEqual(uninstall_result.returncode, 0, uninstall_result.stderr)
+            self.assertIn('trust_level = "trusted"', codex_config.read_text(encoding="utf-8"))
+            cleaned_hooks = json.loads(codex_hooks.read_text(encoding="utf-8"))
+            self.assertEqual(
+                cleaned_hooks["hooks"]["Stop"],
+                [{"hooks": [{"type": "command", "command": foreign_command}]}],
+            )
+
+    def test_print_installed_includes_codex_when_config_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            install_dir = temp_root / ".agent-notify"
+            codex_config = temp_root / ".codex" / "config.toml"
+            codex_hooks = temp_root / ".codex" / "hooks.json"
+
+            install_result = self.run_install(
+                "--client",
+                "codex",
+                "--install-dir",
+                str(install_dir),
+                "--claude-settings",
+                str(temp_root / ".claude" / "settings.json"),
+                "--cursor-hooks",
+                str(temp_root / ".cursor" / "hooks.json"),
+                "--opencode-plugin",
+                str(temp_root / ".config" / "opencode" / "plugins" / "agent-notify.js"),
+                "--codex-config",
+                str(codex_config),
+                "--codex-hooks",
+                str(codex_hooks),
+                env=self.make_fake_codex_env(temp_root, "0.116.0"),
+            )
+            self.assertEqual(install_result.returncode, 0, install_result.stderr)
+
+            result = self.run_install(
+                "--print-installed",
+                "--install-dir",
+                str(install_dir),
+                "--claude-settings",
+                str(temp_root / ".claude" / "settings.json"),
+                "--cursor-hooks",
+                str(temp_root / ".cursor" / "hooks.json"),
+                "--opencode-plugin",
+                str(temp_root / ".config" / "opencode" / "plugins" / "agent-notify.js"),
+                "--codex-config",
+                str(codex_config),
+                "--codex-hooks",
+                str(codex_hooks),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("codex", result.stdout.strip().splitlines())
 
 
 if __name__ == "__main__":
