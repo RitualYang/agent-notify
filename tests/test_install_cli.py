@@ -176,6 +176,12 @@ class InstallCliTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("cannot import tomllib", result.stderr)
 
+    def test_install_sh_auto_selects_python_when_unset(self) -> None:
+        env = {**os.environ, "PYTHON": ""}
+        result = self.run_install_sh("--help", env=env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_install_sh_interactive_respects_python_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_root = Path(tmpdir)
