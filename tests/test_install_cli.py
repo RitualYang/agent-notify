@@ -128,6 +128,15 @@ class InstallCliTests(unittest.TestCase):
             "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
         }
 
+    def codex_args(self, temp_root: Path) -> tuple[str, str, str, str]:
+        codex_dir = temp_root / ".codex"
+        return (
+            "--codex-config",
+            str(codex_dir / "config.toml"),
+            "--codex-hooks",
+            str(codex_dir / "hooks.json"),
+        )
+
     def test_print_interactive_defaults_ignores_stale_claude_hook_without_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_root = Path(tmpdir)
@@ -148,6 +157,7 @@ class InstallCliTests(unittest.TestCase):
                 str(cursor_hooks),
                 "--opencode-plugin",
                 str(opencode_plugin),
+                *self.codex_args(temp_root),
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -176,6 +186,7 @@ class InstallCliTests(unittest.TestCase):
                 str(cursor_hooks),
                 "--opencode-plugin",
                 str(opencode_plugin),
+                *self.codex_args(temp_root),
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -193,6 +204,7 @@ class InstallCliTests(unittest.TestCase):
                 str(temp_root / ".cursor" / "hooks.json"),
                 "--opencode-plugin",
                 str(temp_root / ".config" / "opencode" / "plugins" / "agent-notify.js"),
+                *self.codex_args(temp_root),
             )
 
             self.assertEqual(returncode, 1)
@@ -224,6 +236,7 @@ class InstallCliTests(unittest.TestCase):
                 str(cursor_hooks),
                 "--opencode-plugin",
                 str(opencode_plugin),
+                *self.codex_args(temp_root),
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -246,6 +259,7 @@ class InstallCliTests(unittest.TestCase):
                 str(temp_root / ".cursor" / "hooks.json"),
                 "--opencode-plugin",
                 str(temp_root / ".config" / "opencode" / "plugins" / "agent-notify.js"),
+                *self.codex_args(temp_root),
             )
 
             self.assertNotEqual(result.returncode, 0)
@@ -285,6 +299,7 @@ class InstallCliTests(unittest.TestCase):
                 str(cursor_hooks),
                 "--opencode-plugin",
                 str(opencode_plugin),
+                *self.codex_args(temp_root),
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -314,6 +329,7 @@ class InstallCliTests(unittest.TestCase):
                 str(cursor_hooks),
                 "--opencode-plugin",
                 str(opencode_plugin),
+                *self.codex_args(temp_root),
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
