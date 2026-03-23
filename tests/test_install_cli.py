@@ -34,11 +34,17 @@ class InstallCliTests(unittest.TestCase):
             check=False,
         )
 
-    def run_install_sh_interactive(self, *args: str, user_input: bytes = b"q") -> tuple[int, str]:
+    def run_install_sh_interactive(
+        self,
+        *args: str,
+        user_input: bytes = b"q",
+        env: dict[str, str] | None = None,
+    ) -> tuple[int, str]:
         master_fd, slave_fd = pty.openpty()
         process = subprocess.Popen(
             [str(INSTALL_SH), *args],
             cwd=REPO_ROOT,
+            env=self.install_sh_env(env),
             stdin=slave_fd,
             stdout=slave_fd,
             stderr=slave_fd,
@@ -99,14 +105,26 @@ class InstallCliTests(unittest.TestCase):
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    def run_install_sh(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def run_install_sh(
+        self,
+        *args: str,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [str(INSTALL_SH), *args],
             cwd=REPO_ROOT,
+            env=self.install_sh_env(env),
             text=True,
             capture_output=True,
             check=False,
         )
+
+    def install_sh_env(self, env: dict[str, str] | None = None) -> dict[str, str]:
+        base = dict(os.environ)
+        base["PYTHON"] = sys.executable
+        if env:
+            base.update(env)
+        return base
 
     def make_fake_codex_env(self, temp_root: Path, version: str) -> dict[str, str]:
         bin_dir = temp_root / "bin"
@@ -136,6 +154,47 @@ class InstallCliTests(unittest.TestCase):
             "--codex-hooks",
             str(codex_dir / "hooks.json"),
         )
+
+    def test_install_sh_respects_python_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            env = {**os.environ, "PYTHON": "python-does-not-exist"}
+            result = self.run_install_sh(
+                "update",
+                "--install-dir",
+                str(temp_root / ".agent-notify"),
+                "--claude-settings",
+                str(temp_root / ".claude" / "settings.json"),
+                "--cursor-hooks",
+                str(temp_root / ".cursor" / "hooks.json"),
+                "--opencode-plugin",
+                str(temp_root / ".config" / "opencode" / "plugins" / "agent-notify.js"),
+                *self.codex_args(temp_root),
+                env=env,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("cannot import tomllib", result.stderr)
+
+    def test_install_sh_interactive_respects_python_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            env = {**os.environ, "PYTHON": "python-does-not-exist"}
+            returncode, output = self.run_install_sh_interactive(
+                "--install-dir",
+                str(temp_root / ".agent-notify"),
+                "--claude-settings",
+                str(temp_root / ".claude" / "settings.json"),
+                "--cursor-hooks",
+                str(temp_root / ".cursor" / "hooks.json"),
+                "--opencode-plugin",
+                str(temp_root / ".config" / "opencode" / "plugins" / "agent-notify.js"),
+                *self.codex_args(temp_root),
+                env=env,
+            )
+
+            self.assertNotEqual(returncode, 0)
+            self.assertIn("cannot import tomllib", output)
 
     def test_print_interactive_defaults_ignores_stale_claude_hook_without_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
