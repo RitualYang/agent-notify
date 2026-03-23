@@ -5,9 +5,9 @@ menu_select_clients() {
   local allow_empty="$2"
   shift 2
   local defaults=("$@")
-  local options=("claude" "cursor" "opencode")
-  local labels=("Claude Code" "Cursor" "OpenCode")
-  local selected=(0 0 0)
+  local options=("claude" "cursor" "opencode" "codex")
+  local labels=("Claude Code" "Cursor" "OpenCode" "Codex")
+  local selected=(0 0 0 0)
   local current=0
   local count=${#options[@]}
   local notice=""
@@ -19,6 +19,7 @@ menu_select_clients() {
         claude) selected[0]=1 ;;
         cursor) selected[1]=1 ;;
         opencode) selected[2]=1 ;;
+        codex) selected[3]=1 ;;
       esac
     done
   fi
@@ -125,9 +126,9 @@ menu_select_clients() {
         ;;
       a|A)
         if [ "$(selected_count)" -eq "$count" ]; then
-          selected=(0 0 0)
+          selected=(0 0 0 0)
         else
-          selected=(1 1 1)
+          selected=(1 1 1 1)
         fi
         notice=''
         ;;

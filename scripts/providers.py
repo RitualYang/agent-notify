@@ -5,15 +5,18 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
+import subprocess
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SUPPORTED_CLIENTS = ("claude", "cursor", "opencode")
-KNOWN_CLIENTS = ("claude", "cursor", "opencode", "codex")
+SUPPORTED_CLIENTS = ("claude", "cursor", "opencode", "codex")
+KNOWN_CLIENTS = SUPPORTED_CLIENTS
 CLIENT_ALIASES = {
     "all": SUPPORTED_CLIENTS,
     "both": ("claude", "cursor"),
@@ -21,6 +24,10 @@ CLIENT_ALIASES = {
     "clear": (),
 }
 AGENT_NOTIFY_SOURCE = "agent-notify"
+CODEX_EXPERIMENTAL_MIN_VERSION = (0, 114, 0)
+CODEX_EXPERIMENTAL_MAX_VERSION = (0, 116, 999)
+CODEX_MANAGED_TABLE = "agent_notify"
+CODEX_MANAGED_CLIENT_KEY = "codex"
 
 
 @dataclass(frozen=True)
@@ -30,10 +37,18 @@ class ProviderSpec:
     note: str | None = None
 
 
+@dataclass(frozen=True)
+class ProviderActionResult:
+    action: str | None = None
+    notes: tuple[str, ...] = ()
+
+
 DEFAULT_RUNTIME_DIR = Path(os.path.expanduser("~/.agent-notify")).resolve()
 DEFAULT_CLAUDE_SETTINGS = Path(os.path.expanduser("~/.claude/settings.json"))
 DEFAULT_CURSOR_HOOKS = Path(os.path.expanduser("~/.cursor/hooks.json"))
 DEFAULT_OPENCODE_PLUGIN = Path(os.path.expanduser("~/.config/opencode/plugins/agent-notify.js"))
+DEFAULT_CODEX_CONFIG = Path(os.path.expanduser("~/.codex/config.toml"))
+DEFAULT_CODEX_HOOKS = Path(os.path.expanduser("~/.codex/hooks.json"))
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RUNTIME_SOURCE = REPO_ROOT / "hooks" / "notify.py"
@@ -117,6 +132,12 @@ DEFAULT_CONFIG = {
             "session.error",
         ],
     },
+    "codex": {
+        "notify_on_stop": True,
+        "stop_title": "Codex",
+        "stop_message": "任务已完成，等待你查看结果。",
+        "notification_title": "Codex",
+    },
 }
 
 
@@ -126,8 +147,8 @@ PROVIDERS: dict[str, ProviderSpec] = {
     "opencode": ProviderSpec(name="opencode", supported=True),
     "codex": ProviderSpec(
         name="codex",
-        supported=False,
-        note="当前未发现 Codex CLI 稳定的用户级 hooks / plugin 接口，已预留 provider 架构，后续可补上。",
+        supported=True,
+        note="Codex 完成提醒为稳定支持；更丰富的通知分类依赖实验性 hooks，仅在 0.114.x-0.116.x 启用。",
     ),
 }
 
@@ -144,6 +165,65 @@ def load_json(path: Path, default: Any) -> Any:
 def save_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def load_toml(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError:
+        return default
+
+
+def toml_key(key: str) -> str:
+    if re.match(r"^[A-Za-z0-9_-]+$", key):
+        return key
+    return json.dumps(key, ensure_ascii=False)
+
+
+def toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ", ".join(toml_value(item) for item in value) + "]"
+    raise TypeError(f"Unsupported TOML value: {value!r}")
+
+
+def dump_toml(data: dict[str, Any]) -> str:
+    lines: list[str] = []
+
+    def emit_table(table: dict[str, Any], path: list[str]) -> None:
+        scalar_items: list[tuple[str, Any]] = []
+        table_items: list[tuple[str, dict[str, Any]]] = []
+        for key, value in table.items():
+            if isinstance(value, dict):
+                table_items.append((key, value))
+            else:
+                scalar_items.append((key, value))
+
+        if path:
+            if lines:
+                lines.append("")
+            lines.append("[" + ".".join(toml_key(part) for part in path) + "]")
+
+        for key, value in scalar_items:
+            lines.append(f"{toml_key(key)} = {toml_value(value)}")
+
+        for key, value in table_items:
+            emit_table(value, [*path, key])
+
+    emit_table(data, [])
+    return "\n".join(lines) + "\n"
+
+
+def save_toml(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(dump_toml(payload), encoding="utf-8")
 
 
 def merge_missing_defaults(existing: Any, defaults: Any) -> Any:
@@ -163,8 +243,12 @@ def ensure_executable(path: Path) -> None:
     path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def argv_for(script_path: Path, client: str) -> list[str]:
+    return [str(script_path), "--client", client, "--source", AGENT_NOTIFY_SOURCE]
+
+
 def command_for(script_path: Path, client: str) -> str:
-    return f"{shlex.quote(str(script_path))} --client {client} --source {AGENT_NOTIFY_SOURCE}"
+    return " ".join(shlex.quote(part) for part in argv_for(script_path, client))
 
 
 def normalize_clients(raw_clients: list[str] | None, default_clients: tuple[str, ...]) -> list[str]:
@@ -259,6 +343,91 @@ def is_agent_notify_command(command: Any, client: str, runtime_path: Path) -> bo
     return False
 
 
+def is_agent_notify_argv(command: Any, client: str, runtime_path: Path) -> bool:
+    if isinstance(command, list):
+        parts = [str(item) for item in command]
+    elif isinstance(command, str):
+        parts = split_command(command)
+    else:
+        return False
+
+    if not parts:
+        return False
+
+    if parts == argv_for(runtime_path, client):
+        return True
+
+    if Path(parts[0]).name != "notify.py":
+        return False
+
+    if not command_has_flag(parts, "--client", client):
+        return False
+
+    if command_has_flag(parts, "--source", AGENT_NOTIFY_SOURCE):
+        return True
+
+    return ".agent-notify/" in " ".join(parts)
+
+
+def codex_notify_argv(runtime_path: Path) -> list[str]:
+    return argv_for(runtime_path, "codex")
+
+
+def parse_codex_version(raw: str) -> tuple[int, int, int] | None:
+    match = re.search(r"codex-cli\s+(\d+)\.(\d+)\.(\d+)", raw)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def detect_codex_version() -> tuple[int, int, int] | None:
+    try:
+        result = subprocess.run(
+            ["codex", "--version"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    return parse_codex_version(result.stdout + "\n" + result.stderr)
+
+
+def codex_supports_experimental_hooks(version: tuple[int, int, int] | None) -> bool:
+    if version is None:
+        return False
+    return CODEX_EXPERIMENTAL_MIN_VERSION <= version <= CODEX_EXPERIMENTAL_MAX_VERSION
+
+
+def codex_managed_state(config: dict[str, Any]) -> dict[str, Any]:
+    managed = config.setdefault(CODEX_MANAGED_TABLE, {})
+    if not isinstance(managed, dict):
+        managed = {}
+        config[CODEX_MANAGED_TABLE] = managed
+    client_state = managed.setdefault(CODEX_MANAGED_CLIENT_KEY, {})
+    if not isinstance(client_state, dict):
+        client_state = {}
+        managed[CODEX_MANAGED_CLIENT_KEY] = client_state
+    return client_state
+
+
+def prune_empty_dicts(data: dict[str, Any]) -> dict[str, Any]:
+    for key, value in list(data.items()):
+        if isinstance(value, dict):
+            cleaned = prune_empty_dicts(value)
+            if cleaned:
+                data[key] = cleaned
+            else:
+                data.pop(key, None)
+        elif value in ({}, [], None):
+            data.pop(key, None)
+    return data
+
+
 def claude_hook_contains_agent_notify(entry: Any, client: str, runtime_path: Path) -> bool:
     if not isinstance(entry, dict):
         return False
@@ -308,11 +477,40 @@ def is_opencode_installed(plugin_path: Path) -> bool:
     return "agent-notify opencode plugin" in plugin_path.read_text(encoding="utf-8")
 
 
+def codex_hook_contains_agent_notify(entry: Any, runtime_path: Path) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    hooks = entry.get("hooks")
+    if not isinstance(hooks, list):
+        return False
+    return any(
+        isinstance(hook, dict) and is_agent_notify_command(hook.get("command"), "codex", runtime_path)
+        for hook in hooks
+    )
+
+
+def is_codex_installed(config_path: Path, hooks_path: Path, runtime_path: Path) -> bool:
+    config = load_toml(config_path, {})
+    if isinstance(config, dict) and is_agent_notify_argv(config.get("notify"), "codex", runtime_path):
+        return True
+
+    data = load_json(hooks_path, {})
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    entries = hooks.get("Stop")
+    if not isinstance(entries, list):
+        return False
+    return any(codex_hook_contains_agent_notify(entry, runtime_path) for entry in entries)
+
+
 def get_installed_clients(
     runtime_path: Path,
     claude_settings: Path,
     cursor_hooks: Path,
     opencode_plugin: Path,
+    codex_config: Path,
+    codex_hooks: Path,
 ) -> list[str]:
     installed: list[str] = []
     if is_claude_installed(claude_settings, runtime_path):
@@ -321,6 +519,8 @@ def get_installed_clients(
         installed.append("cursor")
     if is_opencode_installed(opencode_plugin):
         installed.append("opencode")
+    if is_codex_installed(codex_config, codex_hooks, runtime_path):
+        installed.append("codex")
     return installed
 
 
@@ -329,6 +529,8 @@ def get_interactive_default_clients(
     claude_settings: Path,
     cursor_hooks: Path,
     opencode_plugin: Path,
+    codex_config: Path,
+    codex_hooks: Path,
 ) -> list[str]:
     if not runtime_path.is_file():
         return []
@@ -340,6 +542,8 @@ def get_interactive_default_clients(
         defaults.append("cursor")
     if opencode_plugin.exists() and is_opencode_installed(opencode_plugin):
         defaults.append("opencode")
+    if codex_config.exists() and is_codex_installed(codex_config, codex_hooks, runtime_path):
+        defaults.append("codex")
     return defaults
 
 
@@ -476,6 +680,129 @@ def uninstall_cursor(runtime_path: Path, hooks_path: Path) -> bool:
     return True
 
 
+def install_codex(runtime_path: Path, config_path: Path, hooks_path: Path) -> ProviderActionResult:
+    notes: list[str] = []
+    config = load_toml(config_path, {})
+    if not isinstance(config, dict):
+        config = {}
+
+    notify_installed = False
+    notify_value = config.get("notify")
+    if notify_value is None or is_agent_notify_argv(notify_value, "codex", runtime_path):
+        config["notify"] = codex_notify_argv(runtime_path)
+        notify_installed = True
+    else:
+        notes.append("codex: existing notify config preserved; skipped replacing non-agent-notify callback")
+
+    managed = codex_managed_state(config)
+    managed["managed_notify"] = notify_installed
+
+    version = detect_codex_version()
+    hooks_installed = False
+    if codex_supports_experimental_hooks(version):
+        features = config.setdefault("features", {})
+        if not isinstance(features, dict):
+            features = {}
+            config["features"] = features
+
+        if "codex_hooks" not in features or managed.get("managed_codex_hooks_feature"):
+            features["codex_hooks"] = True
+            managed["managed_codex_hooks_feature"] = True
+
+            command = command_for(runtime_path, "codex")
+            data = load_json(hooks_path, {})
+            hooks = data.setdefault("hooks", {})
+            stop_entries = hooks.setdefault("Stop", [])
+            if not any(codex_hook_contains_agent_notify(entry, runtime_path) for entry in stop_entries):
+                stop_entries.append({"hooks": [{"type": "command", "command": command}]})
+            save_json(hooks_path, data)
+            hooks_installed = True
+        else:
+            notes.append("codex: existing codex_hooks feature preserved; skipped experimental hook installation")
+    else:
+        version_text = ".".join(str(part) for part in version) if version else "unknown"
+        notes.append(
+            f"codex: installed completion-only notifications; experimental hooks require Codex CLI 0.114.x-0.116.x (detected {version_text})"
+        )
+        managed.pop("managed_codex_hooks_feature", None)
+
+    if not hooks_installed:
+        uninstall_codex_hooks_only(runtime_path, hooks_path)
+
+    save_toml(config_path, prune_empty_dicts(config))
+    return ProviderActionResult(action="installed", notes=tuple(notes))
+
+
+def uninstall_codex_hooks_only(runtime_path: Path, hooks_path: Path) -> bool:
+    data = load_json(hooks_path, {})
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+
+    entries = hooks.get("Stop")
+    if not isinstance(entries, list):
+        return False
+
+    filtered: list[dict[str, Any]] = []
+    changed = False
+    for entry in entries:
+        if codex_hook_contains_agent_notify(entry, runtime_path):
+            changed = True
+            continue
+        filtered.append(entry)
+
+    if not changed:
+        return False
+
+    hooks["Stop"] = filtered
+    cleaned = prune_empty_objects(data)
+    if cleaned == {}:
+        hooks_path.unlink(missing_ok=True)
+        return True
+
+    save_json(hooks_path, cleaned)
+    return True
+
+
+def uninstall_codex(runtime_path: Path, config_path: Path, hooks_path: Path) -> bool:
+    config = load_toml(config_path, {})
+    if not isinstance(config, dict):
+        config = {}
+
+    changed = uninstall_codex_hooks_only(runtime_path, hooks_path)
+
+    managed = config.get(CODEX_MANAGED_TABLE, {})
+    codex_state = managed.get(CODEX_MANAGED_CLIENT_KEY, {}) if isinstance(managed, dict) else {}
+    if not isinstance(codex_state, dict):
+        codex_state = {}
+
+    if codex_state.get("managed_notify") and is_agent_notify_argv(config.get("notify"), "codex", runtime_path):
+        config.pop("notify", None)
+        changed = True
+
+    features = config.get("features")
+    if (
+        isinstance(features, dict)
+        and codex_state.get("managed_codex_hooks_feature")
+        and features.get("codex_hooks") is True
+    ):
+        features.pop("codex_hooks", None)
+        changed = True
+
+    codex_state.pop("managed_notify", None)
+    codex_state.pop("managed_codex_hooks_feature", None)
+    cleaned = prune_empty_dicts(config)
+
+    if not changed:
+        return False
+
+    if cleaned:
+        save_toml(config_path, cleaned)
+    else:
+        config_path.unlink(missing_ok=True)
+    return True
+
+
 def render_opencode_template(template_path: Path, runtime_path: Path) -> str:
     template = template_path.read_text(encoding="utf-8")
     return template.replace("__AGENT_NOTIFY_RUNTIME__", str(runtime_path))
@@ -513,17 +840,21 @@ def install_provider(
     claude_settings: Path,
     cursor_hooks: Path,
     opencode_plugin: Path,
-) -> str | None:
+    codex_config: Path,
+    codex_hooks: Path,
+) -> ProviderActionResult:
     if client == "claude":
         install_claude(runtime_path, claude_settings)
-        return "installed"
+        return ProviderActionResult(action="installed")
     if client == "cursor":
         install_cursor(runtime_path, cursor_hooks)
-        return "installed"
+        return ProviderActionResult(action="installed")
     if client == "opencode":
         install_opencode(runtime_path, opencode_plugin, OPENCODE_TEMPLATE)
-        return "installed"
-    return None
+        return ProviderActionResult(action="installed")
+    if client == "codex":
+        return install_codex(runtime_path, codex_config, codex_hooks)
+    return ProviderActionResult()
 
 
 def uninstall_provider(
@@ -532,11 +863,15 @@ def uninstall_provider(
     claude_settings: Path,
     cursor_hooks: Path,
     opencode_plugin: Path,
-) -> str | None:
+    codex_config: Path,
+    codex_hooks: Path,
+) -> ProviderActionResult:
     if client == "claude":
-        return "removed" if uninstall_claude(runtime_path, claude_settings) else None
+        return ProviderActionResult(action="removed") if uninstall_claude(runtime_path, claude_settings) else ProviderActionResult()
     if client == "cursor":
-        return "removed" if uninstall_cursor(runtime_path, cursor_hooks) else None
+        return ProviderActionResult(action="removed") if uninstall_cursor(runtime_path, cursor_hooks) else ProviderActionResult()
     if client == "opencode":
-        return "removed" if uninstall_opencode(opencode_plugin) else None
-    return None
+        return ProviderActionResult(action="removed") if uninstall_opencode(opencode_plugin) else ProviderActionResult()
+    if client == "codex":
+        return ProviderActionResult(action="removed") if uninstall_codex(runtime_path, codex_config, codex_hooks) else ProviderActionResult()
+    return ProviderActionResult()

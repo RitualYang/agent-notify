@@ -9,6 +9,8 @@ from pathlib import Path
 
 from providers import (
     DEFAULT_CLAUDE_SETTINGS,
+    DEFAULT_CODEX_CONFIG,
+    DEFAULT_CODEX_HOOKS,
     DEFAULT_CURSOR_HOOKS,
     DEFAULT_OPENCODE_PLUGIN,
     DEFAULT_RUNTIME_DIR,
@@ -26,7 +28,7 @@ from providers import (
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Sync macOS notifications for Claude Code, Cursor, and OpenCode. Selected clients are installed; unselected clients are removed."
+        description="Sync macOS notifications for Claude Code, Cursor, OpenCode, and Codex. Selected clients are installed; unselected clients are removed."
     )
     parser.add_argument(
         "--client",
@@ -38,6 +40,8 @@ def main() -> int:
     parser.add_argument("--claude-settings", default=str(DEFAULT_CLAUDE_SETTINGS))
     parser.add_argument("--cursor-hooks", default=str(DEFAULT_CURSOR_HOOKS))
     parser.add_argument("--opencode-plugin", default=str(DEFAULT_OPENCODE_PLUGIN))
+    parser.add_argument("--codex-config", default=str(DEFAULT_CODEX_CONFIG))
+    parser.add_argument("--codex-hooks", default=str(DEFAULT_CODEX_HOOKS))
     parser.add_argument("--keep-runtime", action="store_true", help="Keep runtime files even when no client remains selected.")
     parser.add_argument("--print-installed", action="store_true", help="Print currently installed supported clients, one per line.")
     parser.add_argument(
@@ -56,16 +60,32 @@ def main() -> int:
     claude_settings = Path(args.claude_settings).expanduser().resolve()
     cursor_hooks = Path(args.cursor_hooks).expanduser().resolve()
     opencode_plugin = Path(args.opencode_plugin).expanduser().resolve()
+    codex_config = Path(args.codex_config).expanduser().resolve()
+    codex_hooks = Path(args.codex_hooks).expanduser().resolve()
     runtime_path = install_dir / "bin" / "notify.py"
 
-    installed_clients = get_installed_clients(runtime_path, claude_settings, cursor_hooks, opencode_plugin)
+    installed_clients = get_installed_clients(
+        runtime_path,
+        claude_settings,
+        cursor_hooks,
+        opencode_plugin,
+        codex_config,
+        codex_hooks,
+    )
     if args.print_installed:
         for client in installed_clients:
             print(client)
         return 0
 
     if args.print_interactive_defaults:
-        for client in get_interactive_default_clients(runtime_path, claude_settings, cursor_hooks, opencode_plugin):
+        for client in get_interactive_default_clients(
+            runtime_path,
+            claude_settings,
+            cursor_hooks,
+            opencode_plugin,
+            codex_config,
+            codex_hooks,
+        ):
             print(client)
         return 0
 
@@ -98,12 +118,40 @@ def main() -> int:
 
     for client in SUPPORTED_CLIENTS:
         if client in selected_supported:
-            uninstall_provider(client, runtime_path, claude_settings, cursor_hooks, opencode_plugin)
-            install_provider(client, runtime_path, claude_settings, cursor_hooks, opencode_plugin)
-            enabled.append(client)
+            uninstall_provider(
+                client,
+                runtime_path,
+                claude_settings,
+                cursor_hooks,
+                opencode_plugin,
+                codex_config,
+                codex_hooks,
+            )
+            install_result = install_provider(
+                client,
+                runtime_path,
+                claude_settings,
+                cursor_hooks,
+                opencode_plugin,
+                codex_config,
+                codex_hooks,
+            )
+            if install_result.action == "installed":
+                enabled.append(client)
+            notes.extend(install_result.notes)
         else:
-            if uninstall_provider(client, runtime_path, claude_settings, cursor_hooks, opencode_plugin):
+            uninstall_result = uninstall_provider(
+                client,
+                runtime_path,
+                claude_settings,
+                cursor_hooks,
+                opencode_plugin,
+                codex_config,
+                codex_hooks,
+            )
+            if uninstall_result.action == "removed":
                 removed.append(client)
+            notes.extend(uninstall_result.notes)
 
     if not selected_supported and not args.keep_runtime and install_dir.exists():
         shutil.rmtree(install_dir, ignore_errors=True)
@@ -113,6 +161,8 @@ def main() -> int:
     print(f"Claude settings: {claude_settings}")
     print(f"Cursor hooks: {cursor_hooks}")
     print(f"OpenCode plugin: {opencode_plugin}")
+    print(f"Codex config: {codex_config}")
+    print(f"Codex hooks: {codex_hooks}")
     if enabled:
         print(f"Enabled clients: {', '.join(enabled)}")
     else:

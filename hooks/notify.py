@@ -93,12 +93,19 @@ DEFAULT_CONFIG = {
             "session.error",
         ],
     },
+    "codex": {
+        "notify_on_stop": True,
+        "stop_title": "Codex",
+        "stop_message": "任务已完成，等待你查看结果。",
+        "notification_title": "Codex",
+    },
 }
 
 CLIENT_DEFAULT_TITLES = {
     "claude": "Claude Code",
     "cursor": "Cursor",
     "opencode": "OpenCode",
+    "codex": "Codex",
 }
 
 
@@ -130,8 +137,10 @@ def load_config(config_path: Path) -> dict[str, Any]:
     return deep_merge(DEFAULT_CONFIG, load_json(config_path, {}))
 
 
-def read_payload() -> dict[str, Any]:
-    raw = sys.stdin.read().strip()
+def read_payload(raw_arg: str | None = None) -> dict[str, Any]:
+    raw = (raw_arg or "").strip()
+    if not raw:
+        raw = sys.stdin.read().strip()
     if not raw:
         return {}
     try:
@@ -215,6 +224,11 @@ def resolve_project_name(payload: dict[str, Any], client: str) -> str | None:
             payload.get("directory"),
             opencode_context.get("worktree"),
             payload.get("worktree"),
+        ]
+    elif client == "codex":
+        candidates = [
+            payload.get("cwd"),
+            os.getcwd(),
         ]
     else:
         candidates = []
@@ -328,6 +342,8 @@ def detect_platform(payload: dict[str, Any], client_arg: str | None) -> str:
         return "claude"
     if event in {"session.idle", "permission.asked", "session.error"}:
         return "opencode"
+    if event in {"agent-turn-complete"} or payload.get("transcript_path") or payload.get("turn_id"):
+        return "codex"
     return "cursor"
 
 
@@ -420,13 +436,89 @@ def classify_opencode(payload: dict[str, Any], config: dict[str, Any]) -> dict[s
     return None
 
 
+def recent_transcript_lines(path: Path, limit_bytes: int = 65536) -> list[str]:
+    if not path.exists():
+        return []
+
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        if size == 0:
+            return []
+
+        read_size = min(size, limit_bytes)
+        handle.seek(size - read_size)
+        chunk = handle.read().decode("utf-8", errors="ignore")
+
+    lines = chunk.splitlines()
+    if size > read_size and lines:
+        lines = lines[1:]
+    return lines
+
+
+def recent_codex_event_types(transcript_path: Any) -> list[str]:
+    if not isinstance(transcript_path, str) or not transcript_path.strip():
+        return []
+
+    events: list[str] = []
+    for line in reversed(recent_transcript_lines(Path(transcript_path))):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(payload, dict) or payload.get("type") != "event_msg":
+            continue
+
+        event_payload = payload.get("payload")
+        if not isinstance(event_payload, dict):
+            continue
+
+        event_type = event_payload.get("type")
+        if isinstance(event_type, str):
+            events.append(event_type)
+    return events
+
+
+def classify_codex(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, str] | None:
+    event = str(payload.get("type") or payload.get("event") or payload.get("hook_event_name") or "")
+    codex_config = config["codex"]
+
+    if event == "agent-turn-complete" and codex_config.get("notify_on_stop", True):
+        return {
+            "kind": "complete",
+            "message": str(payload.get("message") or payload.get("last_assistant_message") or ""),
+        }
+
+    if event != "Stop":
+        return None
+
+    kind_map = {
+        "exec_approval_request": "permission",
+        "apply_patch_approval_request": "permission",
+        "elicitation_request": "question",
+        "request_user_input": "input",
+        "stream_error": "error",
+    }
+    for transcript_event in recent_codex_event_types(payload.get("transcript_path")):
+        kind = kind_map.get(transcript_event)
+        if kind:
+            return {
+                "kind": kind,
+                "message": str(payload.get("last_assistant_message") or payload.get("message") or ""),
+            }
+
+    return None
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Send Claude Code / Cursor / OpenCode notifications on macOS.")
-    parser.add_argument("--client", choices=["claude", "cursor", "opencode"], help="Force hook client type.")
+    parser = argparse.ArgumentParser(description="Send Claude Code / Cursor / OpenCode / Codex notifications on macOS.")
+    parser.add_argument("--client", choices=["claude", "cursor", "opencode", "codex"], help="Force hook client type.")
     parser.add_argument("--source", help="Optional installer marker. Reserved for agent-notify.")
     parser.add_argument("--dry-run", action="store_true", help="Print notification payload instead of calling osascript.")
     parser.add_argument("--config", help="Path to config file. Defaults to ~/.agent-notify/config.json")
     parser.add_argument("--state", help="Path to state file. Defaults to ~/.agent-notify/state.json")
+    parser.add_argument("payload", nargs="?", help="Optional serialized payload argument used by Codex notify callbacks.")
     args = parser.parse_args()
 
     base_dir = Path(os.path.expanduser("~/.agent-notify"))
@@ -435,13 +527,15 @@ def main() -> int:
 
     config = load_config(config_path)
     state = load_json(state_path, {}) if not args.dry_run else {}
-    payload = read_payload()
+    payload = read_payload(args.payload)
     client = detect_platform(payload, args.client)
 
     if client == "claude":
         notification = classify_claude(payload, config)
     elif client == "opencode":
         notification = classify_opencode(payload, config)
+    elif client == "codex":
+        notification = classify_codex(payload, config)
     else:
         notification = classify_cursor(payload, config, state)
 

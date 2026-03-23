@@ -21,6 +21,7 @@ Selections:
   1 = claude
   2 = cursor
   3 = opencode
+  4 = codex
   all = enable all supported
   none = remove all supported
 
@@ -44,7 +45,8 @@ selection_to_client() {
     1|claude) echo "claude" ;;
     2|cursor) echo "cursor" ;;
     3|opencode) echo "opencode" ;;
-    4|all|all-supported) echo "all" ;;
+    4|codex) echo "codex" ;;
+    all|all-supported) echo "all" ;;
     0|none|clear) echo "none" ;;
     both) echo "both" ;;
     *) return 1 ;;
