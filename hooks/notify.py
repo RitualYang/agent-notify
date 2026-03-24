@@ -458,30 +458,6 @@ def recent_transcript_lines(path: Path, limit_bytes: int = 65536) -> list[str]:
     return lines
 
 
-def recent_codex_event_types(transcript_path: Any) -> list[str]:
-    if not isinstance(transcript_path, str) or not transcript_path.strip():
-        return []
-
-    events: list[str] = []
-    for line in reversed(recent_transcript_lines(Path(transcript_path))):
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        if not isinstance(payload, dict) or payload.get("type") != "event_msg":
-            continue
-
-        event_payload = payload.get("payload")
-        if not isinstance(event_payload, dict):
-            continue
-
-        event_type = event_payload.get("type")
-        if isinstance(event_type, str):
-            events.append(event_type)
-    return events
-
-
 def codex_turn_id(value: Any) -> str | None:
     if not isinstance(value, dict):
         return None
@@ -498,7 +474,6 @@ def recent_codex_event(transcript_path: Any, turn_id: Any) -> dict[str, Any] | N
 
     expected_turn_id = turn_id.strip() if isinstance(turn_id, str) and turn_id.strip() else None
     latest_event_without_turn_id: dict[str, Any] | None = None
-    saw_event_with_turn_id = False
     for line in reversed(recent_transcript_lines(Path(transcript_path))):
         try:
             payload = json.loads(line)
@@ -514,9 +489,7 @@ def recent_codex_event(transcript_path: Any, turn_id: Any) -> dict[str, Any] | N
 
         if expected_turn_id:
             event_turn_id = codex_turn_id(event_payload) or codex_turn_id(payload)
-            if event_turn_id:
-                saw_event_with_turn_id = True
-            else:
+            if not event_turn_id:
                 if latest_event_without_turn_id is None:
                     latest_event_without_turn_id = event_payload
                 continue
@@ -525,7 +498,7 @@ def recent_codex_event(transcript_path: Any, turn_id: Any) -> dict[str, Any] | N
 
         return event_payload
 
-    if expected_turn_id and not saw_event_with_turn_id:
+    if expected_turn_id:
         return latest_event_without_turn_id
 
     return None
