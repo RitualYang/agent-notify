@@ -272,6 +272,138 @@ class NotifyRuntimeTests(unittest.TestCase):
         self.assertEqual(output["notification"]["kind"], "error")
         self.assertEqual(output["notification"]["subtitle"], "agent-notify · 执行出错")
 
+    def test_codex_stop_ignores_stale_events_from_other_turns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            transcript_path = Path(tmpdir) / "session.jsonl"
+            transcript_path.write_text(
+                "".join(
+                    [
+                        json.dumps({"type": "event_msg", "payload": {"type": "exec_approval_request", "turn_id": "turn-old"}})
+                        + "\n",
+                        json.dumps({"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "turn-new"}})
+                        + "\n",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = self.run_notify_process(
+                "--client",
+                "codex",
+                payload={
+                    "hook_event_name": "Stop",
+                    "cwd": "/tmp/agent-notify",
+                    "transcript_path": str(transcript_path),
+                    "turn_id": "turn-new",
+                },
+            )
+
+        self.assertEqual(result.stdout.strip(), "")
+
+    def test_codex_subtitle_does_not_fall_back_to_process_cwd_when_payload_has_no_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            transcript_path = Path(tmpdir) / "session.jsonl"
+            transcript_path.write_text(
+                json.dumps({"type": "event_msg", "payload": {"type": "elicitation_request", "turn_id": "turn-1"}}) + "\n",
+                encoding="utf-8",
+            )
+
+            output = self.run_notify(
+                "codex",
+                {
+                    "hook_event_name": "Stop",
+                    "transcript_path": str(transcript_path),
+                    "turn_id": "turn-1",
+                },
+            )
+
+        self.assertEqual(output["notification"]["kind"], "question")
+        self.assertEqual(output["notification"]["subtitle"], "等待回答")
+
+    def test_codex_uses_transcript_event_cwd_for_project_name_when_payload_has_no_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            transcript_path = Path(tmpdir) / "session.jsonl"
+            transcript_path.write_text(
+                json.dumps(
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "exec_approval_request",
+                            "turn_id": "turn-1",
+                            "cwd": "/tmp/real-project",
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            output = self.run_notify(
+                "codex",
+                {
+                    "hook_event_name": "Stop",
+                    "transcript_path": str(transcript_path),
+                    "turn_id": "turn-1",
+                },
+            )
+
+        self.assertEqual(output["notification"]["kind"], "permission")
+        self.assertEqual(output["notification"]["subtitle"], "real-project · 等待授权")
+
+    def test_codex_can_classify_stop_notification_without_turn_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            transcript_path = Path(tmpdir) / "session.jsonl"
+            transcript_path.write_text(
+                json.dumps(
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "exec_approval_request",
+                            "cwd": "/tmp/real-project",
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            output = self.run_notify(
+                "codex",
+                {
+                    "hook_event_name": "Stop",
+                    "transcript_path": str(transcript_path),
+                },
+            )
+
+        self.assertEqual(output["notification"]["kind"], "permission")
+        self.assertEqual(output["notification"]["subtitle"], "real-project · 等待授权")
+
+    def test_codex_falls_back_to_latest_untagged_event_when_newer_other_turn_event_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            transcript_path = Path(tmpdir) / "session.jsonl"
+            transcript_path.write_text(
+                "".join(
+                    [
+                        json.dumps({"type": "event_msg", "payload": {"type": "exec_approval_request"}}) + "\n",
+                        json.dumps({"type": "event_msg", "payload": {"type": "token_count", "turn_id": "turn-other"}})
+                        + "\n",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            output = self.run_notify(
+                "codex",
+                {
+                    "hook_event_name": "Stop",
+                    "transcript_path": str(transcript_path),
+                    "turn_id": "turn-current",
+                },
+            )
+
+        self.assertEqual(output["notification"]["kind"], "permission")
+        self.assertEqual(output["notification"]["subtitle"], "等待授权")
+
     def test_codex_missing_transcript_falls_back_safely(self) -> None:
         result = self.run_notify_process(
             "--client",

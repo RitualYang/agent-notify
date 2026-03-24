@@ -228,7 +228,9 @@ def resolve_project_name(payload: dict[str, Any], client: str) -> str | None:
     elif client == "codex":
         candidates = [
             payload.get("cwd"),
-            os.getcwd(),
+            payload.get("workdir"),
+            payload.get("workspace_root"),
+            payload.get("worktree"),
         ]
     else:
         candidates = []
@@ -456,11 +458,22 @@ def recent_transcript_lines(path: Path, limit_bytes: int = 65536) -> list[str]:
     return lines
 
 
-def recent_codex_event_types(transcript_path: Any) -> list[str]:
-    if not isinstance(transcript_path, str) or not transcript_path.strip():
-        return []
+def codex_turn_id(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    for key in ("turn_id", "turnId", "turn-id"):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
 
-    events: list[str] = []
+
+def recent_codex_event(transcript_path: Any, turn_id: Any) -> dict[str, Any] | None:
+    if not isinstance(transcript_path, str) or not transcript_path.strip():
+        return None
+
+    expected_turn_id = turn_id.strip() if isinstance(turn_id, str) and turn_id.strip() else None
+    latest_event_without_turn_id: dict[str, Any] | None = None
     for line in reversed(recent_transcript_lines(Path(transcript_path))):
         try:
             payload = json.loads(line)
@@ -474,10 +487,21 @@ def recent_codex_event_types(transcript_path: Any) -> list[str]:
         if not isinstance(event_payload, dict):
             continue
 
-        event_type = event_payload.get("type")
-        if isinstance(event_type, str):
-            events.append(event_type)
-    return events
+        if expected_turn_id:
+            event_turn_id = codex_turn_id(event_payload) or codex_turn_id(payload)
+            if not event_turn_id:
+                if latest_event_without_turn_id is None:
+                    latest_event_without_turn_id = event_payload
+                continue
+            if event_turn_id != expected_turn_id:
+                continue
+
+        return event_payload
+
+    if expected_turn_id:
+        return latest_event_without_turn_id
+
+    return None
 
 
 def classify_codex(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, str] | None:
@@ -500,13 +524,22 @@ def classify_codex(payload: dict[str, Any], config: dict[str, Any]) -> dict[str,
         "request_user_input": "input",
         "stream_error": "error",
     }
-    for transcript_event in recent_codex_event_types(payload.get("transcript_path")):
-        kind = kind_map.get(transcript_event)
-        if kind:
-            return {
-                "kind": kind,
-                "message": str(payload.get("last_assistant_message") or payload.get("message") or ""),
-            }
+
+    transcript_event = recent_codex_event(payload.get("transcript_path"), codex_turn_id(payload))
+    if not transcript_event:
+        return None
+
+    if not payload.get("cwd"):
+        transcript_cwd = transcript_event.get("cwd")
+        if isinstance(transcript_cwd, str) and transcript_cwd.strip():
+            payload["cwd"] = transcript_cwd
+
+    kind = kind_map.get(transcript_event.get("type"))
+    if kind:
+        return {
+            "kind": kind,
+            "message": str(payload.get("last_assistant_message") or payload.get("message") or ""),
+        }
 
     return None
 
